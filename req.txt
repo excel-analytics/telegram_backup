@@ -1,0 +1,3 @@
+pytg
+pymongo
+tqdm
