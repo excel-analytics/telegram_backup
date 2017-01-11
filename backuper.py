@@ -54,7 +54,7 @@ class TelegramBackuper(object):
             messages = self._history(print_name, bulk_size, offset)
             if messages is None:
                 # There is no more messages
-                logger.worning('No more messages.')
+                logger.warning('No more messages.')
                 break
             for msg in messages:
                 content_part = dict(msg.copy())
