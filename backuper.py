@@ -80,6 +80,7 @@ class TelegramBackuper(object):
             offset += bulk_size
             self._store_content(content)
         self._store_metadata(meta_data)
+        pbar.close()
 
     def _store_content(self, content):
         # self.content_collection.insert_many(content)
