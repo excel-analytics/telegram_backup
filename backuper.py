@@ -1,10 +1,12 @@
 #encoding:utf-8
 
 import logging
+import time
 
 
 from pytg import Telegram
 from pytg.exceptions import IllegalResponseException
+from pytg.exceptions import NoResponse
 
 import pymongo
 from pymongo.errors import DuplicateKeyError
@@ -23,8 +25,10 @@ class TelegramBackuper(object):
             telegram=binary,
             pubkey_file=pubkey)
         self.sender = self.tg.sender
-        self.content_collection = pymongo.MongoClient()['tg_backup']['content']
-        self.metadata_collection = pymongo.MongoClient()['tg_backup']['metadata']
+        self.mongo = pymongo.MongoClient()
+        self.db = self.mongo['tg_backup']
+        self.content_collection = self.db['content']
+        self.metadata_collection = self.db['metadata']
         
     def _history(self, chat, count, offset=0):
         try:
@@ -36,19 +40,33 @@ class TelegramBackuper(object):
     def _gialogs(self, count, offset=0):
         return self.sender.dialog_list(count, offset)
 
-    def get_gialogs(self, cnt, offset=0):
-        self._store_metadata(self._gialogs(cnt, offset))
+    def get_all_dialogs(self):
+        # self.db.drop_collection('metadata')
+        # No idea why it gets only 500 contacts.
+        bulk_size = 500
+        bulks_cnt = 2
+        total_dialogs = 0
+        well_stored_dialogs = dict()
+        for i in range(bulks_cnt):
+            offset = i * bulk_size
+            dialogs = self._gialogs(bulk_size, offset)
+            for dialog in dialogs:
+                total_dialogs += 1
+                well_stored_dialogs[dialog['id']] = dialog
+            self._store_metadata(well_stored_dialogs)
+            print('Stored {} dialogs.'.format(total_dialogs))
+            print('Gialogs count = {}.'.format(len(well_stored_dialogs)))
+            # Better to sleep a little
+            time.sleep(5)
 
-    def prepare_content(self, msg):
-        pass
-
-    def get_hist_for_id(self, chat_id, bulks=10, offset=0, bulk_size=100):
+    def get_hist_for_id(self, chat_id, bulks=10, offset=0, bulk_size=100, stop_if_dup=False):
         # Get print_name to get history for this name
         chat_id = '${}'.format(chat_id)
         print_name = self.metadata_collection.find_one({'id': chat_id})['print_name']
 
         pbar = tqdm(total=bulks * bulk_size, unit='msg')
         meta_data = dict()
+        msg_counter = 0
         for i in range(bulks):
             content = list()
             messages = self._history(print_name, bulk_size, offset)
@@ -76,33 +94,33 @@ class TelegramBackuper(object):
                     meta_data[msg['fwd_from']['id']] = msg['fwd_from']
                 # Append finilized content
                 content.append(content_part)
+                msg_counter += 1
             pbar.update(bulk_size)
             offset += bulk_size
-            self._store_content(content)
+            any_dups = self._store_content(content)
+            if any_dups and stop_if_dup:
+                break
         self._store_metadata(meta_data)
         pbar.close()
+        print('Stored {} messages.'.format(msg_counter))
+        print('Stored {} contacts.'.format(len(meta_data)))
 
     def _store_content(self, content):
         # self.content_collection.insert_many(content)
         # Insert many does not work, because of dup key possibility.
+        any_dups = False
         for item in content:
             try:
                 self.content_collection.insert_one(item)
             except DuplicateKeyError:
                 # print('Dup.')
-                pass
+                any_dups = True
+        return any_dups
 
     def _store_metadata(self, meta_data):
-        if isinstance(meta_data, list):
-            # from dialogs
-            for data in meta_data:
-                if self.metadata_collection.find_one({'id': data['id']}) is None:
-                    self.metadata_collection.insert_one(data)
-        elif isinstance(meta_data, dict):
-            # from content
-            for key, data in meta_data.items():
-                if self.metadata_collection.find_one({'id': key}) is None:
-                    self.metadata_collection.insert_one(data)
+        for key, data in meta_data.items():
+            if self.metadata_collection.find_one({'id': key}) is None:
+                self.metadata_collection.insert_one(data)
 
 
 if __name__ == '__main__':
@@ -112,16 +130,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Get some Telegram history.')
     parser.add_argument('--dial', action='store_true',
                         help='Collect some dialogs metadata.')
-    parser.add_argument('--cnt', type=int, default=10)
+    parser.add_argument('--cnt', type=int, default=100000)
     parser.add_argument('--off', type=int, default=0)
     parser.add_argument('--bulk_size', type=int, default=100)
     parser.add_argument('--hist', action='store_true',
                         help='Collect some history for given --chat (without $ symbol).')
     parser.add_argument('--chat', type=str)
+    parser.add_argument('--stop_if_dup', action='store_true')
     args = parser.parse_args()
     if args.dial:
-        tg_backup.get_gialogs(args.cnt, args.off)
+        tg_backup.get_all_dialogs()
     elif args.hist:
-        tg_backup.get_hist_for_id(args.chat, args.cnt, args.off, args.bulk_size)
+        tg_backup.get_hist_for_id(args.chat, args.cnt, args.off, args.bulk_size, args.stop_if_dup)
     else:
         print('Nothing.')
