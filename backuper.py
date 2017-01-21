@@ -63,7 +63,7 @@ class TelegramBackuper(object):
         # Get print_name to get history for this name
         chat_id = '${}'.format(chat_id)
         print_name = self.metadata_collection.find_one({'id': chat_id})['print_name']
-
+        print(print_name)
         pbar = tqdm(total=bulks * bulk_size, unit='msg')
         meta_data = dict()
         msg_counter = 0
@@ -74,6 +74,8 @@ class TelegramBackuper(object):
                 # There is no more messages
                 logger.warning('No more messages.')
                 break
+            if 'error' in messages:
+                raise RuntimeError(messages)
             for msg in messages:
                 content_part = dict(msg.copy())
                 content_part['_id'] = content_part['id']
