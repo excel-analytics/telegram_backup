@@ -2,7 +2,7 @@
 
 import logging
 import time
-
+import random
 
 from pytg import Telegram
 from pytg.exceptions import IllegalResponseException
@@ -29,6 +29,7 @@ class TelegramBackuper(object):
         self.db = self.mongo['tg_backup']
         self.content_collection = self.db['content']
         self.metadata_collection = self.db['metadata']
+        self._RETRY_CNT = 10
         
     def _history(self, chat, count, offset=0):
         try:
@@ -37,8 +38,21 @@ class TelegramBackuper(object):
             # No more messages
             return None
 
-    def _gialogs(self, count, offset=0):
+    def _dialogs(self, count, offset=0):
         return self.sender.dialog_list(count, offset)
+
+    def _dialogs_retry(self, bulk_size, offset):
+        retry_n = 0
+        while retry_n < self._RETRY_CNT:
+            retry_n += 1
+            try:
+                dialogs = self._dialogs(bulk_size, offset)
+                return dialogs
+            except:
+                logger.warning('No response from client. Attempt: {n}.'.format(n=retry_n))
+                if retry_n == self._RETRY_CNT:
+                    raise RuntimeError('No response from client.')
+                self._sleep_a_little(2 ** retry_n)    
 
     def get_all_dialogs(self):
         # self.db.drop_collection('metadata')
@@ -49,7 +63,7 @@ class TelegramBackuper(object):
         well_stored_dialogs = dict()
         for i in range(bulks_cnt):
             offset = i * bulk_size
-            dialogs = self._gialogs(bulk_size, offset)
+            dialogs = self._dialogs_retry(bulk_size, offset)
             for dialog in dialogs:
                 total_dialogs += 1
                 well_stored_dialogs[dialog['id']] = dialog
@@ -59,17 +73,30 @@ class TelegramBackuper(object):
             # Better to sleep a little
             time.sleep(5)
 
+    def _history_retry(self, print_name, bulk_size, offset):
+        retry_n = 0
+        while retry_n < self._RETRY_CNT:
+            retry_n += 1
+            try:
+                history = self._history(print_name, bulk_size, offset)
+                return history
+            except:
+                logger.warning('No response from client. Attempt: {n}.'.format(n=retry_n))
+                if retry_n == self._RETRY_CNT:
+                    raise RuntimeError('No response from client.')
+                self._sleep_a_little(2 ** retry_n)  
+
     def get_hist_for_id(self, chat_id, bulks=10, offset=0, bulk_size=100, stop_if_dup=False):
         # Get print_name to get history for this name
         chat_id = '${}'.format(chat_id)
         print_name = self.metadata_collection.find_one({'id': chat_id})['print_name']
-        print(print_name)
-        pbar = tqdm(total=bulks * bulk_size, unit='msg')
+        logger.info(print_name)
+        pbar = tqdm(total=bulks * bulk_size, unit='msg', smoothing=0.01)
         meta_data = dict()
         msg_counter = 0
         for i in range(bulks):
             content = list()
-            messages = self._history(print_name, bulk_size, offset)
+            messages = self._history_retry(print_name, bulk_size, offset)
             if messages is None:
                 # There is no more messages
                 logger.warning('No more messages.')
@@ -102,10 +129,15 @@ class TelegramBackuper(object):
             any_dups = self._store_content(content)
             if any_dups and stop_if_dup:
                 break
+            self._sleep_a_little()
         self._store_metadata(meta_data)
         pbar.close()
         print('Stored {} messages.'.format(msg_counter))
         print('Stored {} contacts.'.format(len(meta_data)))
+
+    def _sleep_a_little(self, multiply=1):
+        time_to_sleep = random.uniform(0, 2)
+        time.sleep(time_to_sleep * multiply)
 
     def _store_content(self, content):
         # self.content_collection.insert_many(content)
